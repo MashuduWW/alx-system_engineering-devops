@@ -1,5 +1,2 @@
 #!/bin/bash
-
-
-for a in {a..z};do for b in {a..z};do [[ $a$b==oo ]]||echo $a$b;done;done
-echo
+for a in {a..z};do for b in {a..z};do [[ $a$b==oo ]]||echo $a$b; done; done; echo
