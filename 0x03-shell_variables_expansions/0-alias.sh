@@ -2,3 +2,4 @@
 
 
 alias ll = 'rm *'
+echo
