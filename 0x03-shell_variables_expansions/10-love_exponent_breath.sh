@@ -1,3 +1,2 @@
 #!/bin/bash
-[ -z "$BREATH" ] || [ -z "$LOVE" ] && echo "BREATH or LOVE is not set." && exit 1 || echo "$BREATH^$LOVE" | bc
-
+if [ -z "$BREATH" ]; then echo BREATH not set; exit 1; fi; if [ -z "$LOVE" ]; then echo LOVE not set; exit 1; fi; echo $((BREATH ** LOVE))
