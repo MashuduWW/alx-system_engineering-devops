@@ -1,2 +1,2 @@
 #!/bin/bash
-if [ -z "$BINARY" ]; then echo "BINARY is not set."; exit 1; fi; i=0; n=0; while [ $n -lt ${#BINARY} ]; do i=$(( i * 2 + ${BINARY:$n:1} )); n=$(( n + 1 )); done; echo $i
+echo $'if [ -z "$BINARY" ]\nthen\n  echo "BINARY is not set."\n  exit 1\nfi\ni=0\nn=0\nwhile [ $n -lt ${#BINARY} ]\ndo\n  i=$(( i * 2 + ${BINARY:$n:1} ))\n  n=$(( n + 1 ))\ndone\necho $i' > script.sh && bash script.sh
