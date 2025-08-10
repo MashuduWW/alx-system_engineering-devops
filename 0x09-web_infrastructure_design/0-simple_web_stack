@@ -1,0 +1,70 @@
+WEB STACK PROJECT
+
+            Internet
+              |
+    DNS (www.foobar.com -> 8.8.8.8)   <-- www is an A record
+              |
+           8.8.8.8  (single server)
+    +--------------------------------------+
+    |  OS (Ubuntu/CentOS)                  |
+    |  Nginx (web server)  <-- listens 80/443
+    |  Application Server (PHP-FPM /       |
+    |     Gunicorn / Node)  <-- app process|
+    |  Application files (codebase)        |
+    |  MySQL (database)  <-- local socket  |
+    +--------------------------------------+
+              |
+           Storage (disk), RAM, CPU
+
+
+User types www.foobar.com. Browser resolves DNS: www.foobar.com → A record → 8.8.8.8.
+
+- TCP connection: browser opens a TCP connection to 8.8.8.8 on port 443 (HTTPS) or 80 (HTTP).
+
+- TLS handshake (if HTTPS): browser and server negotiate TLS; browser verifies the certificate for www.foobar.com.
+
+- HTTP request: browser sends GET / with Host header www.foobar.com.
+
+Nginx receives request (web server):
+
+- If the request is for a static file (CSS, images), Nginx serves it directly from the filesystem.
+
+- If it requires dynamic processing, Nginx reverse proxies the request to the application server (e.g., via fastcgi_pass for PHP-FPM, or proxy_pass to a Node/Gunicorn socket).
+
+- Application server runs application code (reads request, executes business logic) and, if needed, queries MySQL for persistent data.
+
+- MySQL responds with data; application server builds an HTML/JSON response.
+
+- Response flows back to Nginx, which forwards it to the browser over the established TCP/TLS connection.
+
+Browser renders the page for the user.
+
+
+
+The required components.
+1 server
+A physical or virtual machine (VM) with CPU, RAM, disk and a public IP (8.8.8.8) that runs all services.
+
+1 domain name (foobar.com with www pointing to 8.8.8.8)
+Human-friendly name that users type. DNS translates www.foobar.com to the server IP so traffic can be routed.
+
+What type of DNS record is www?
+In this setup www.foobar.com is an A record pointing directly to 8.8.8.8. (It could alternatively be a CNAME to another name, but here it’s an A record.)
+
+1 web server — Nginx
+Handles incoming HTTP(S) connections, terminates TLS, serves static files, manages many concurrent connections, and acts as a reverse proxy/load balancer in front of the app server.
+
+1 application server
+Runs the dynamic application code and business logic. Examples: PHP-FPM (for PHP apps), Gunicorn/uWSGI (Python), Node.js process (JavaScript). Nginx forwards dynamic requests to it.
+
+1 application files (your code base)
+The website’s source files, templates, static assets, and configuration stored on the server (e.g., /var/www/foobar).
+
+1 database — MySQL
+Stores persistent, structured data (users, posts, transactions). The application server connects to MySQL (often via localhost socket) to read/write data.
+
+What is the server using to communicate with the user's computer?
+The TCP/IP stack over the Internet using HTTP or HTTPS (HTTP over TLS). Common ports: 80 (HTTP) and 443 (HTTPS). Underneath that are Ethernet/IP/TCP layers.
+
+
+
