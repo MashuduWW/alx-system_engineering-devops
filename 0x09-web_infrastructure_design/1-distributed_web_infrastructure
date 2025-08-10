@@ -1,0 +1,173 @@
+ 
+Distributed Web Infrastructure
+
+                      Internet
+                        |
+               DNS: www.foobar.com -> 8.8.8.8
+                        |
+                 +------------------+
+                 |   HAProxy LB     |   ← Server 1 (public)
+                 |  (listens 80/443)|
+                 +--------+---------+
+                          |
+         -----------------+-----------------
+         |                                   |
++----------------------+           +----------------------+
+| Nginx (web server)    |          | (optional) other App |
+| + App server (app)    |          | servers (scale-out)  |
+| + App files (/var/www)|          |                      |
++----------------------+           +----------------------+
+         |                                   |
+         |                                   |
+         +---------------+-------------------+
+                         |
+                  +--------------+
+                  | MySQL DB     |   ← Server 3 (private)
+                  | Primary (RW) |
+                  +--------------+
+
+
+Each Component Explained
+- Separate Load Balancer (HAProxy) — Server 1
+
+Why: decouples public traffic handling from app execution and allows future horizontal scaling (add more app/web servers behind it) without changing the public IP.
+
+Benefit: central place for TLS termination, health checks, rate limiting, and routing rules.
+
+- Separate Web server + Application server + app files — Server 2
+
+Why: separates runtime from the DB. Keeping the app and web tier separate from the DB reduces resource contention and improves security (DB can sit on a private network).
+
+- Nginx (web server) handles static files and reverse proxies dynamic requests to the application runtime (same machine here for simplicity). The application server executes business logic and renders dynamic responses.
+
+Separate Database (MySQL) — Server 3
+
+Why: persistent storage must be isolated for performance, backup, and security (not directly accessible to the public internet).
+
+Makes it possible to scale DB independently and add replicas later.
+
+
+
+Request flow 
+Browser → DNS resolves www.foobar.com to 8.8.8.8.
+
+Browser opens TCP/TLS to 8.8.8.8 (HAProxy).
+
+HAProxy receives request, chooses a backend (Server 2 — Nginx/app), forwards the request.
+
+Nginx serves static files or forwards to the app process; app queries MySQL on Server 3 if needed.
+
+Response travels back ≈ App → Nginx → HAProxy → Browser.
+
+Load balancer distribution algorithm — chosen config (and how it works)
+Two common algorithms:
+
+Round-Robin
+
+How it works: LB cycles through backend servers in order: 1, 2, 3, 1, 2, 3...
+
+Good when backends are similar and requests have similar resource cost.
+
+Least Connections (leastconn) — recommended for web apps with variable request durations
+
+How it works: LB routes a new request to the backend with the fewest active connections. This tends to balance load when some requests are long-lived (WebSocket, long API calls).
+
+HAProxy example directive: balance leastconn
+
+Which I’d configure here: leastconn (or roundrobin if backends are identical and request durations are uniform). Explanation: web app requests can vary in duration, so leastconn reduces overload on busy backends.
+
+Active-Active vs Active-Passive for load balancers (which is enabled / difference)
+Active-Active
+
+Both (or all) load balancers are live and accept traffic (e.g., DNS round-robin across two HAProxy instances, or a fronting anycast / GSLB). They share load; if one fails, remaining LBs keep accepting traffic.
+
+Pros: better utilization, no single LB idle, smoother failover.
+
+Cons: more complex (session stickiness, config sync, state).
+
+Active-Passive
+
+One LB is active (handles traffic), the other is on standby (passive). A failover mechanism (VRRP/keepalived) promotes the passive to active if the primary fails.
+
+Pros: simpler to implement, simpler state handling.
+
+Cons: standby resources idle until failover.
+
+In this 3-server design: we have one HAProxy instance (Server 1). That is a single LB — effectively neither active-active nor active-passive in a multi-LB sense; it’s a single point of entry. To enable Active-Passive, you’d add a second HAProxy server plus a VRRP/keepalived pair. To enable Active-Active, you’d deploy multiple LBs and either use DNS/load distribution in front of them or an external anycast/GSLB.
+
+Database Primary–Replica (Master–Slave) cluster — how it works
+Primary (Master) accepts writes (INSERT/UPDATE/DELETE). It records changes in its binary log (binlog).
+
+Replica (Slave) subscribes to the primary’s binlog and replays those changes to maintain a copy of the primary’s data (asynchronously or semi-synchronously).
+
+Replication flow: Primary -> binlog -> Replica I/O thread pulls binlog -> Replica SQL thread applies changes.
+
+Use cases:
+
+Offload read traffic to replicas (scale reads).
+
+Provide failover candidates in case primary fails (requires promotion process).
+
+Caveats:
+
+Replication lag: replicas may be slightly behind primary; reads from replicas may be stale.
+
+Failover complexity: promoting a replica to primary requires ensuring no split-brain and generally some orchestration (MHA, Orchestrator, MySQL Group Replication, ProxySQL).
+
+Primary vs Replica from the application’s point of view
+Primary node
+
+The application sends write operations (CREATE/UPDATE/DELETE) here.
+
+Often also used for consistent reads (if reads must reflect the last write immediately).
+
+Replica node
+
+Application can send read-only queries (SELECT) to replicas to offload the primary and improve throughput.
+
+Must be used carefully where stale reads are acceptable (eventual consistency).
+
+Typical pattern: Read/Write split — writes → primary, reads → replicas.
+
+Where the Single Points of Failure (SPOF) are
+Even with three servers, SPOFs remain:
+
+HAProxy (Server 1) — single LB is a SPOF. If it dies or its network fails, the site is unreachable.
+
+App/Web server (Server 2) — still a SPOF if there’s only one backend. If that server fails, no app instance to serve requests.
+
+MySQL Primary (Server 3) — single DB primary is a SPOF for writes and for data if no replicas/backups exist.
+
+Network / single datacenter — if everything lives in one AZ/DC, that is a SPOF.
+
+Mitigation requires adding redundancy: multiple LBs, multiple app servers (behind the LB), DB replicas, cross-AZ deployments.
+
+Security issues in this setup (as given)
+No firewall / open ports: exposing MySQL or management ports to the public internet is dangerous. Use host firewalls, security groups, and private subnets.
+
+No HTTPS / TLS: plain HTTP exposes credentials, cookies, and session tokens. TLS should be terminated at the LB or at Nginx.
+
+Secrets exposed on servers: if app files include plaintext credentials, a compromised app server leaks DB credentials. Use secrets management.
+
+No network segmentation: DB should be on a private network unreachable directly from the internet.
+
+No rate limiting / DDoS protection: single LB without protections is vulnerable to volumetric attacks.
+
+No hardened images / patching policy: OS and app stacks must be kept patched; not addressed here.
+
+Lack of monitoring / observability
+No metrics collection (CPU, memory, request rates, latency).
+
+No health checks, alerting, or log aggregation.
+
+No distributed tracing for debugging slow requests.
+
+Consequence: outages and performance problems are detected late, recovery is slow.
+
+What to add: Prometheus + Grafana for metrics, ELK/EFK or Loki for logs, health checks in HAProxy, alerting (PagerDuty/email), distributed tracing (Jaeger).
+
+
+
+
+
+
