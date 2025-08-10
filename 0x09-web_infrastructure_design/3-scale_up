@@ -1,0 +1,201 @@
+                                   Internet
+                                      |
+                           DNS: www.foobar.com -> 8.8.8.8
+                                      |
+                                 +----------+
+                                 |  Router  |
+                                 +----------+
+                                      |
+                                  Public IP
+                                      |
+                  +---------------------------------------+
+                  |    Server 1 (HAProxy Load Balancer)   |
+                  |  - HAProxy (TLS termination / optional)|
+                  |  - Host firewall (iptables/ufw)       |  <-- Firewall #1
+                  |  - Monitoring client (Sumo/agent)     |  <-- Collector #1
+                  +-----------------+---------------------+
+                                    |
+                         private network / VLAN
+                                    |
+       +----------------------------+----------------------------+
+       |                            |                            |
++---------------+           +---------------+            +----------------+
+| Server 2      |           | Server 3      |            | (Optional LB   |
+| Web + App     |           | MySQL DB      |            | standby: not  |
+| - Nginx       |           | - MySQL (RW)  |            | required now)  |
+| - App process |           | - Host fw (DB)|            |                |
+| - Host firewall|          | - Monitoring  |            +----------------+
+| - Monitoring  |           | - DB listening |           
++---------------+           +---------------+
+  Firewall #2                  Firewall #3
+  Collector #2                 Collector #3
+
+
+
+
+We have 3 physical/virtual servers:
+
+Server 1 — HAProxy (public entry), TLS termination point (SSL cert installed here), host firewall, monitoring agent.
+
+Server 2 — Web server (Nginx) + application server + app files, host firewall, monitoring agent.
+
+Server 3 — MySQL (primary) with host firewall and monitoring agent.
+
+Each server runs a host-based firewall (iptables/ufw/firewalld) — that gives us 3 firewalls (one per server).
+
+Each server runs a monitoring client/collector (Sumo Logic collector, or Prometheus node_exporter + push/forwarder) — that gives us 3 monitoring clients.
+
+Why I added each new element
+Host firewalls (3 total, one per server)
+
+Purpose: restrict inbound/outbound traffic to only the required ports and peers (e.g., HAProxy allows 80/443 from Internet; app server allows traffic only from LB; DB allows traffic only from app server). Mitigates attack surface and lateral movement.
+
+SSL certificate for www.foobar.com (installed on LB and optionally backend)
+
+Purpose: encrypt traffic between clients and your infrastructure (and optionally between LB and backend). Required for confidentiality, integrity, and browser trust.
+
+Monitoring clients (3)
+
+Purpose: collect metrics & logs from each server (CPU, memory, disk, app logs, access logs, DB metrics) and forward them to a central monitoring/observability service (Sumo Logic, Datadog, Prometheus+Grafana, etc.). With one agent per host we get full coverage and can correlate across tiers.
+
+What are firewalls for?
+Short: traffic filtering and segmentation.
+
+At host level they block unwanted ports and only allow trusted peers (e.g., Server3 only accepts MySQL connections from Server2 or Server1’s private IP range).
+
+They help prevent direct access to management ports (SSH restricted to admin IP or bastion host) and reduce blast radius if one server is compromised.
+
+Combined with network-level controls (VPC security groups, VLANs) they form layered defense.
+
+Why serve traffic over HTTPS?
+Confidentiality: prevents eavesdroppers from reading user data (passwords, tokens).
+
+Integrity: prevents content tampering in transit.
+
+Authentication: TLS cert proves the server controls www.foobar.com (helps avoid man-in-the-middle).
+
+Browser & SEO: modern browsers mark HTTP sites as “not secure”; many features (HTTP/2, service workers) require HTTPS.
+
+Compliance: many standards/regulations require encrypted transport.
+
+What monitoring is used for (high level)?
+Infrastructure metrics: CPU, memory, disk, network, process counts.
+
+Application metrics: request rates, latency (p95/p99), error rates, queue lengths.
+
+Database metrics: queries/sec, replica lag, slow queries, connections.
+
+Logs & traces: access logs, error logs, distributed traces for request flows.
+
+Alerts & dashboards: notify on CPU spike, high error rate, DB replica lag, or QPS anomalies.
+
+Example stacks:
+
+SaaS: Sumo Logic, Datadog, New Relic — agent pushes logs/metrics to SaaS.
+
+Open-source: Prometheus (pull) + Grafana, with node_exporter, nginx_exporter, mysqld_exporter, plus a log shipper (Filebeat/Fluentd) to ELK.
+
+How the monitoring tool collects data
+Two common models:
+
+Push (agent-based SaaS collectors) — e.g., Sumo Logic collector or Datadog agent:
+
+A small agent runs on each server, reads metrics and tails logs, and pushes them securely over TLS to the SaaS endpoint.
+
+Pros: works from inside private networks; easy for SaaS.
+
+Example: Sumo Logic collector tails /var/log/nginx/access.log, /var/log/app/*.log, and collects system metrics, then sends them to Sumo backend.
+
+Pull (Prometheus model) — Prometheus server scrapes exporters:
+
+On each host run node_exporter, nginx_exporter, mysqld_exporter. Prometheus scrapes metrics (HTTP endpoints) at scrape intervals, stores time series, Grafana visualizes them.
+
+For SaaS that expects push, run a pushgateway or agent that forwards to central store.
+
+In our 3-server design, either model works; the requirement for "3 monitoring clients" maps to either: 3 Sumo collectors (one on each host) or 3 exporters + a Prometheus server (Prometheus could run on a management host or be hosted by a monitoring provider).
+
+How to monitor your web server QPS (queries / requests per second)
+Enable Nginx/HAProxy metrics:
+
+Nginx: enable stub_status or use nginx-prometheus-exporter. stub_status gives active connections/requests; the exporter exposes counters for Prometheus.
+
+HAProxy: enable HAProxy stats socket or HTTP stats endpoint and export as metrics (or use haproxy_exporter).
+
+Scrape and compute QPS:
+
+In Prometheus, if Nginx exporter exposes a request counter nginx_http_requests_total, compute QPS as rate( nginx_http_requests_total[1m] ).
+
+In Sumo/other log-based systems, compute QPS by counting access log entries per minute (e.g., count by _sourceCategory(_raw) | timeslice 1m | count).
+
+Alerting & dashboards:
+
+Create Grafana/monitoring dashboard that shows 1m/5m/1h QPS, and set alerts if QPS spikes or drops unexpectedly relative to baseline (anomaly detection).
+
+Where to place the QPS metric?
+
+You can measure at HAProxy (requests at edge) — shows incoming client QPS.
+
+Also measure at Nginx (backend QPS) — shows what backends actually receive (useful to detect LB drop).
+
+Comparing both helps detect dropped requests, network issues, or LB misconfiguration.
+
+Security & operational hardening suggestions (practical)
+TLS best practices: Use a valid certificate for www.foobar.com (Let's Encrypt or CA), strong ciphers, enable HTTP/2, enable HSTS. Rotate certs automatically.
+
+Re-encrypt backend traffic: if you terminate TLS at LB, optionally re-encrypt LB→Nginx (TLS between LB and app) to keep end-to-end encryption inside the private network.
+
+SSH access: restrict SSH to known admin IPs via firewall; use a bastion host for access.
+
+Secrets: do not store DB credentials in plain files; use secrets manager (Vault, AWS Secrets Manager).
+
+Backups: automated DB backups and test restores.
+
+Patching & hardening: keep OS & services patched and run regular vulnerability scans.
+
+Issues & trade-offs (you specifically asked about these)
+1) Why terminating SSL at the load balancer level can be an issue
+Loss of end-to-end encryption unless LB re-encrypts to backends. If LB decrypts and sends plaintext to backends, sensitive traffic is exposed within your network (may be OK inside a secure VPC but less ideal).
+
+Key management concentration: private keys must be stored on LB (security requirement). If LB is compromised, keys leak.
+
+Client IP visibility: if LB terminates TLS and proxies requests, backends may see LB’s IP unless X-Forwarded-For is preserved and trusted — incorrect configuration can break logging or IP-based controls.
+
+Mutual TLS / client certs: if you need mTLS to backends, LB termination complicates that.
+Mitigation: Use TLS termination plus TLS re-encryption to backends (TLS passthrough or re-encrypt), and protect LB host with strict filesystem permissions and HSM/ACME automation (cert-manager).
+
+2) Why having only one MySQL server capable of accepting writes is an issue
+SPOF for writes: if the primary fails, writes stop unless you have an automatic failover/promotion process and a replica ready.
+
+Write scalability ceiling: a single writer limits maximum write throughput. Scaling writes typically requires sharding or multi-primary tech.
+
+Failover complexity & potential data loss: promoting a replica to primary must handle replication lag and ensure no split-brain; manual promotion may cause downtime.
+Mitigation: add at least one replica for failover, use semi-synchronous replication, or use managed DB service with built-in HA. Implement automated failover tooling (Orchestrator, MHA) and backups.
+
+3) Why having servers with all the same components (DB + web + app on same hosts) might be a problem
+Resource contention: CPU/IO/Memory shared between DB and app can cause one to starve the other (e.g., heavy queries slow web responses).
+
+Larger blast radius: compromise of one server exposes web code and DB data at once. Segmentation limits attacker reach.
+
+Difficult scaling: you cannot scale tiers independently. Adding another identical server duplicates DB too (bad), instead of adding web nodes behind LB.
+
+Operational complexity: configuration drift, harder monitoring, backups become messy.
+Mitigation: separate concerns — dedicated DB servers, dedicated app/web servers; use immutable images and configuration management to keep roles consistent.
+
+Final quick checklist (actions to implement this design)
+Provision 3 servers (LB, App, DB) in private VLAN.
+
+On each server: install and enable host firewall (rules: LB allow 80/443 from Internet; app allow 80/443 from LB only; DB allow 3306 from App only).
+
+Install SSL certificate for www.foobar.com on HAProxy; optionally configure backend TLS and deploy cert on Nginx too. Automate with certbot or cert-manager.
+
+Install monitoring agents on each server (Sumo Logic or Prometheus exporters + Prometheus server). Configure dashboards and alerts (including QPS).
+
+Harden servers (SSH restrictions, patching, secrets management) and schedule backups.
+
+Add redundancy later: second LB (keepalived or active-active), additional app servers behind HAProxy, MySQL replica for read-scaling and failover.
+
+
+
+
+
+
